@@ -1,0 +1,11 @@
+year <- 2019
+note <- "Nature Communications, Volume 10, Article number: 3113."
+
+bibentry(bibtype = "Manual",
+         title = "Detection of cell-type-specific risk-CpG sites in epigenome-wide association studies",
+         author = c(person("Xiangyu", "Luo"),
+                    person("Can", "Yang"),
+                    person("Yingying", "Wei")),
+         year = year,
+         note = note,
+         textVersion = "Xiangyu Luo, Can Yang, Yingying Wei (2019) Detection of cell-type-specific risk-CpG sites in epigenome-wide association studies, Nature Communications, Volume 10, Articel number: 3113.")

@@ -1,0 +1,229 @@
+%\VignetteIndexEntry{HIREewas}
+%\VignetteEngine{knitr::knitr}
+
+\documentclass[12pt]{article}
+
+<<style-knitr, eval=TRUE, echo=FALSE, results="asis">>=
+BiocStyle::latex()
+@
+
+\geometry{verbose,tmargin=2.5cm,bmargin=2.5cm,lmargin=2.5cm,rmargin=2.5cm}
+
+\title{HIREewas: Detection of Cell-Type-Specific Risk-CpG Sites in EWAS\\ User's Guide}
+\author{Xiangyu Luo\thanks{\email{xyluo1991@gmail.com} The Chinese University of Hong Kong},
+            Can Yang \thanks{The Hong Kong University of Science and Technology}, and 
+            Yingying Wei \thanks{The Chinese University of Hong Kong}
+		}
+		
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+\section{Introduction}
+\noindent In epigenome-wide association studies (EWAS), as samples are measured at the bulk level rather than at the single-cell level, the obtained methylome for each sample shows the signals aggregated from distinct cell types \cite{liu2013epigenome, houseman2012dna, jaffe2014accounting}. The cellular heterogeneity leads to two main challenges for analyzing EWAS data. \\
+
+\noindent On the one hand, the cell type compositions differ between samples and can be associated with phenotypes \cite{liu2013epigenome, jaffe2014accounting}. Both binary phenotypes, such as the diseased or normal status \cite{liu2013epigenome}, and continuous phenotypes, for example, age \cite{jaffe2014accounting}, have been found to affect the cell type compositions. As a result, ignoring the cellular heterogeneity in EWAS can lead to a large number of spurious associations \cite{jaffe2014accounting, zou2014epigenome, mcgregor2016evaluation, rahmani2016sparse}. On the other hand, the phenotype may change the methylation level of a CpG site in some but not all of the cell types. Identifying the exact cell types that carry the risk-CpG sites can deepen our understandings of disease mechanisms. Nevertheless, such identification is challenging because we can only observe the aggregated-level signals.\\
+
+\noindent However, to the best of our knowledge, no existing statistical method for EWAS can detect cell-type-specific associations despite the active research on accounting for cell-type heterogeneity. The existing approaches can be categorized into two schools \cite{teschendorff2017statistical}: ``reference-based'' and ``reference-free'' methods. As the method names indicate, the reference-based methods \cite{houseman2012dna, accomando2014quantitative} require the reference methylation profiles for each cell type to be known a priori, while the reference-free methods do not  depend on any known methylation reference by employing matrix decomposition techniques \cite{houseman2016reference} or extracting surrogate variables including principle components as a special case \cite{leek2007capturing, houseman2014reference, rahmani2016sparse, zou2014epigenome}. \\
+
+\noindent Although all of the existing methods aim to address the cellular heterogeneity problem in EWAS and claim whether a CpG site is associated with phenotypes at the \textit{aggregated level}, none of them can identify the risk-CpG sites for each \textit{individual cell type}, thus missing the opportunity to obtain finer-grained results in EWAS.\\
+
+\noindent We propose a hierarchical model HIRE \cite{hire} to identify the association in EWAS at an unprecedented HIgh REsolution: detecting whether a CpG site has any associations with the phenotypes in each cell type. HIRE not only substantially improves the power of association detection at the aggregated level as compared to the existing methods but also enables the detection of risk-CpG sites for individual cell types. HIRE is applicable to EWAS with binary phenotypes, continuous phenotypes, or both. \\
+
+\noindent The user's guide provides step-by-step instructions for the \Rpackage{HIREewas} R package. We believe that, by helping biology researchers understand in which cell types the CpG sites are affected by a disease using \Rpackage{HIREewas}, HIRE can ultimately facilitate the development of epigenetic therapies by targeting the specifically affected cell types.\\
+
+
+\section{Data Preparation}
+\noindent We first introduce the input data format. The input data consists of the methylation values and the covariates. The methylation values should be organized into a matrix \Robject{Ometh}, where each row represents a CpG site and each column corresponds to a sample. In other words, the $(i,j)$ element of \Robject{Ometh} is the methylation value for sample $j$ in CpG site $j$. The covariate data are also arranged in a matrix \Robject{X}. Each row of \Robject{X} denotes one covariate, so the row number is equal to the number of covariate types. Columns of \Robject{X} represent samples. Therefore, the $(\ell, j)$ element of \Robject{X} is the covariate $\ell$ information of sample $j$. \\
+
+\noindent For demonstration, we then generate a dataset following the simulation steps in \cite{hire}.\\
+
+<<data_preparation1>>=
+###############################################################
+#Generate the EWAS data 
+###############################################################
+
+set.seed(123)
+###define a function to draw samples from a Dirichlet distribution
+rDirichlet <- function(alpha_vec){
+	num <- length(alpha_vec)
+	temp <- rgamma(num, shape = alpha_vec, rate = 1)
+	return(temp / sum(temp))
+}
+
+n <- 180     #number of samples 
+n1 <- 60    #number of controls
+n2 <- 120    #number of cases 
+
+m <- 2000   #number of CpG sites
+K <- 3       #underlying cell type number
+	
+###simulate methylation baseline profiles
+#assume cell type 1 and cell type 2 are from the same lineage
+#cell type 1
+methy1 <- rbeta(m,3,6)
+#cell type 2 
+methy2 <- methy1 + rnorm(m, sd=0.01)
+ind <- sample(1:m, m/5) 
+methy2[ind] <- rbeta(length(ind),3,6)
+
+#cell type 3
+methy3 <- rbeta(m,3,6)
+mu <- cbind(methy1, methy2, methy3)
+
+#number of covariates
+p <- 2
+
+###simulate covariates / phenotype (disease status and age)
+X <- rbind(c(rep(0, n1),rep(1, n2)), runif(n, min=20, max=50))
+
+###simulate phenotype effects
+beta <- array(0, dim=c(m,K,p))
+
+#control vs case
+m_common <- 10
+max_signal <- 0.15
+min_signal <- 0.07
+
+#we allow different signs and magnitudes
+signs <- sample(c(-1,1), m_common*K, replace=TRUE)
+beta[1:m_common,1:K,1] <- signs * runif(m_common*K, min=min_signal, max=max_signal)
+
+m_seperate <- 10
+signs <- sample(c(-1,1), m_seperate*2, replace=TRUE)
+beta[m_common+(1:m_seperate),1:2,1] <- signs * 
+					runif(m_seperate*2, min=min_signal, max=max_signal)
+
+signs <- sample(c(-1,1), m_seperate, replace=TRUE)
+beta[m_common+m_seperate+(1:m_seperate),K,1] <- signs * 
+					runif(m_seperate, min=min_signal, max=max_signal)
+
+#age
+base <- 20
+m_common <- 10
+max_signal <- 0.015
+min_signal <- 0.007
+signs <- sample(c(-1,1), m_common*K, replace=TRUE)
+beta[base+1:m_common,1:K,2] <- signs * 
+					runif(m_common*K, min=min_signal, max=max_signal)
+
+m_seperate <- 10
+signs <- sample(c(-1,1), m_seperate*2, replace=TRUE)
+beta[base+m_common+(1:m_seperate),1:2,2] <- signs * 
+					runif(m_seperate*2, min=min_signal, max=max_signal)
+
+signs <- sample(c(-1,1), m_seperate, replace=TRUE)
+beta[base+m_common+m_seperate+(1:m_seperate),K,2] <- signs * 
+					runif(m_seperate, min=min_signal, max=max_signal)
+
+###generate the cellular compositions 
+P <- sapply(1:n, function(i){
+				if(X[1,i]==0){ #if control
+					rDirichlet(c(4,4, 2+X[2,i]/10))
+				}else{
+					rDirichlet(c(4,4, 5+X[2,i]/10))
+				}	
+			})
+
+###generate the observed methylation profiles 
+Ometh <- NULL
+for(i in 1:n){
+	utmp <- t(sapply(1:m, function(j){
+					tmp1 <- colSums(X[ ,i] * t(beta[j, , ]))
+					rnorm(K,mean=mu[j, ]+tmp1,sd=0.01)
+				}))
+	tmp2 <- colSums(P[ ,i] * t(utmp))
+	Ometh <- cbind(Ometh, tmp2 + rnorm(m, sd = 0.01))
+}
+
+#constrain methylation values between 0 and 1
+Ometh[Ometh > 1] <- 1
+
+Ometh[Ometh < 0] <- 0
+@
+
+\noindent Here we simulated a methylation matrix \Robject{Ometh} with 2,000 CpG sites and 180 samples as well as a covariate matrix \Robject{X} with one binary covariate (case/control) in the first row and one continuous variable (age) in the second row. We can further look into the details.\\
+
+<<data-preparation2>>=
+#the class of the methylation matrix
+class(Ometh)
+
+#the values in the methylation matrix
+head(Ometh[,1:6])
+
+#the class of the covariate matrix
+class(X)
+
+#the values in the covariate matrix
+X[ ,1:6]
+@  
+
+\section{Model Application}
+\noindent Once we have prepared the data \Robject{Ometh} and \Robject{X} described before, we can use the R function \Rfunction{HIRE} to carry out the HIRE model in a convenient way.\\
+
+<<model1>>=
+library(HIREewas)
+ret_list <- HIRE(Ometh, X, num_celltype=K, tol=10^(-5), num_iter=1000, alpha=0.01)
+@
+
+\noindent Among the arguments of the \Rfunction{HIRE}, \Robject{num\_celltype} is the number of cell types specified by the user, which can be decided by prior knowledge or the penalized BIC criterion \cite{pan2007penalized}. \Robject{tol} is the relative tolerance to determine when \Rfunction{HIRE} stops. Specifically, when the ratio of the log observed-data likelihood difference to the log observed-data likelihood at last iteration in the absolute value is smaller than \Robject{tol}, then the HIRE functions stops. The default is 10e-5. \Robject{num\_iter} is the maximum number that \Rfunction{HIRE} iterates with default 1000. \Robject{alpha} is a threshold parameter used in the Bonferroni correction to claim a significant cell-type-specific CpG site and to calculate the penalized BIC, and its default is 0.01.\\
+
+\noindent The return value \Robject{ret\_list} is an R list that consists of all parameter estimates of our interest.
+
+<<model2>>=
+# the class of ret_list
+class(ret_list)
+
+#the estimated cellular compositions 
+ret_list$P_t[ ,1:6]
+
+#the estimated cell-type-specific methylation baseline profiles
+head(ret_list$mu_t)
+
+#the estimated phenotype effects
+head(ret_list$beta_t)
+
+#the penalized BIC value
+ret_list$pBIC
+
+#the estimated p-values to claim whether a CpG site is at risk
+#in some cell type for a covariate
+
+#p value matrix for case/control
+head(ret_list$pvalues[ ,1:3])
+
+#p value matrix for age
+head(ret_list$pvalues[ ,4:6]) 
+@  
+
+\noindent \Robject{ret\_list\$P\_t} is the estimated cell proportion matrix with its rows denoting cell types and columns representing samples. We can also compare the estimates with the underlying truth (see the following code). Since the deconvolution technique is unsupervised, the label-switching problem exists. Therefore, we use (2,1,3) to index \Robject{ret\_list\$P\_t} instead of (1,2,3). \Robject{ret\_list\$mu\_t} is the estimated cell-type-specific methylation baselines in a matrix form, where CpG sites in rows and cell types in cloumn. \Robject{ret\_list\$beta\_t} is a three dimensional array where \Robject{ret\_list\$beta\_t[i,k,ell]} is the estimated phenotype ell effect on CpG site i in cell type k. The penalized BIC score can be obtained by \Robject{ret\_list\$pBIC}. \\
+
+\noindent The approximate p values are stored in the matrix \Robject{ret\_list\$pvalues}. Its dimension is m (the CpG site number) by Kq (the cell type number K times the phenotype number q). In the p-value matrix, one row is a CpG site. The first K columns correspond to the p-value matrix of the phenotype 1, the second K columns corresponds to the p-value matrix of the phenotype 2, and so forth.\\   
+
+<<>>=
+#estimated cell compositions vs the truth
+par(mfrow=c(1,3))
+plot(ret_list$P_t[2, ], P[1, ], xlim=c(0,1), ylim=c(0,1))
+abline(a=0, b=1, col="red")
+
+plot(ret_list$P_t[1, ], P[2, ], xlim=c(0,1), ylim=c(0,1))
+abline(a=0, b=1, col="red")
+
+plot(ret_list$P_t[3, ], P[3, ], xlim=c(0,1), ylim=c(0,1))
+abline(a=0, b=1, col="red")
+@  
+
+\section{Visualization}
+\noindent We can visualize the detected association in a cell-type-specifc way using \Rfunction{riskCpGpattern} as follows.
+
+<<>>=
+riskCpGpattern(ret_list$pvalues[1:100, K+c(2,1,3)], 
+		main_title="Detected association pattern\n with age", hc_row_ind = FALSE)
+@
+
+\noindent Here, for a good visualization, only the p-values for the first 100 CpG sites were demonstrated. \Robject{main\_title} is used to specify the title of the association figure.\Robject{hc\_row\_ind} is an argument indicating whether the rows should be hierarchically clustered.\\
+
+\bibliography{user_guide}
+\end{document}

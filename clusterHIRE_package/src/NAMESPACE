@@ -1,0 +1,2 @@
+export(cHIRE)
+useDynLib(cHIRE0)
